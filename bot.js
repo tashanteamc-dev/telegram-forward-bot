@@ -1,4 +1,4 @@
-// bot.js - XFTEAM Telegram Bot Full Version
+// bot.js - XFTEAM Telegram Bot Forward Version
 const { Telegraf, Markup } = require("telegraf");
 const { Client } = require("pg");
 const express = require("express");
@@ -7,7 +7,7 @@ const express = require("express");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
-const PASSWORD = "xfbest"; // Password for bot access
+const PASSWORD = "xfbest"; // <-- Password for access
 
 if (!BOT_TOKEN || !DATABASE_URL) {
   console.error("BOT_TOKEN and DATABASE_URL are required!");
@@ -72,23 +72,19 @@ async function listUserChannels(userId) {
 async function broadcastContent(userId, content) {
   const channels = await listUserChannels(userId);
   if (!channels.length) return;
+
   for (const ch of channels) {
     try {
       for (const item of content) {
-        if (item.type === "text") {
+        if (item.message_id) {
+          // Forward original message
+          await bot.telegram.forwardMessage(ch.channel_id, item.chat_id, item.message_id);
+        } else if (item.type === "text") {
           await bot.telegram.sendMessage(ch.channel_id, item.value, { parse_mode: "HTML" });
-        } else if (item.type === "photo") {
-          await bot.telegram.sendPhoto(ch.channel_id, item.file_id, { caption: item.caption || "" });
-        } else if (item.type === "video") {
-          await bot.telegram.sendVideo(ch.channel_id, item.file_id, { caption: item.caption || "" });
-        } else if (item.type === "animation") {
-          await bot.telegram.sendAnimation(ch.channel_id, item.file_id);
-        } else if (item.type === "sticker") {
-          await bot.telegram.sendSticker(ch.channel_id, item.file_id);
         }
       }
     } catch (e) {
-      console.error(`Failed to send to ${ch.channel_id}:`, e.message || e);
+      console.error(`Failed to forward/send to ${ch.channel_id}:`, e.message || e);
       if (e.message && e.message.toLowerCase().includes("chat not found")) {
         await db.query("DELETE FROM channels WHERE user_id=$1 AND channel_id=$2", [userId, ch.channel_id]);
       }
@@ -113,18 +109,25 @@ bot.start(async (ctx) => {
 // ---------- Auto-detect channel ----------
 bot.on("my_chat_member", async (ctx) => {
   try {
-    const { chat, from, new_chat_member } = ctx.update.my_chat_member;
+    const { chat, new_chat_member } = ctx.update.my_chat_member;
     if (chat.type !== "channel") return;
 
-    if (new_chat_member.status === "administrator") {
-      const saved = await upsertChannel(from.id, chat.id);
-      console.log(`Auto-registered channel ${saved.title} for user ${from.id}`);
-      try {
-        await bot.telegram.sendMessage(
-          from.id,
-          `✅ Channel linked: ${saved.title} ${saved.username || `(${saved.channel_id})`}`
-        );
-      } catch {}
+    // Hanya ketika bot dijadikan admin
+    if (new_chat_member.user.id === BOT_ID && new_chat_member.status === "administrator") {
+      const admins = await bot.telegram.getChatAdministrators(chat.id);
+      // Ambil semua admin manusia (bukan bot) untuk simpan user_id
+      for (const admin of admins) {
+        if (!admin.user.is_bot) {
+          const saved = await upsertChannel(admin.user.id, chat.id);
+          console.log(`Auto-registered channel ${saved.title} for user ${admin.user.id}`);
+          try {
+            await bot.telegram.sendMessage(
+              admin.user.id,
+              `✅ Channel linked: ${saved.title} ${saved.username || `(${saved.channel_id})`}`
+            );
+          } catch {}
+        }
+      }
     } else if (new_chat_member.status === "left" || new_chat_member.status === "kicked") {
       await db.query("DELETE FROM channels WHERE channel_id=$1", [chat.id]);
       console.log(`Removed channel ${chat.title} from DB`);
@@ -158,7 +161,7 @@ bot.hears("❌ Cancel", async (ctx) => {
 bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "private") return;
   const msg = ctx.message;
-  if (!msg || (!msg.text && !msg.photo && !msg.video && !msg.animation && !msg.sticker)) return;
+  if (!msg || !msg.message_id) return;
 
   const state = userState[ctx.from.id];
   if (!state) return;
@@ -177,28 +180,13 @@ bot.on("message", async (ctx) => {
     return;
   }
 
-  // Only collect content if user passed password
+  // Collect content to forward
   if (state.step === "menu") {
-    let item = null;
-    if (msg.text) {
-      item = { type: "text", value: msg.text };
-    } else if (msg.photo) {
-      item = { type: "photo", file_id: msg.photo[msg.photo.length - 1].file_id, caption: msg.caption || "" };
-    } else if (msg.video) {
-      item = { type: "video", file_id: msg.video.file_id, caption: msg.caption || "" };
-    } else if (msg.animation) {
-      item = { type: "animation", file_id: msg.animation.file_id };
-    } else if (msg.sticker) {
-      item = { type: "sticker", file_id: msg.sticker.file_id };
-    }
-
-    if (item) {
-      state.content.push(item);
-      await ctx.reply("✅ Content received. Sending to all your channels...");
-      await broadcastContent(ctx.from.id, state.content);
-      state.content = [];
-      await ctx.reply("✅ Done! Post sent to all your channels.");
-    }
+    state.content.push({ chat_id: msg.chat.id, message_id: msg.message_id });
+    await ctx.reply("✅ Content received. Forwarding to all your channels...");
+    await broadcastContent(ctx.from.id, state.content);
+    state.content = [];
+    await ctx.reply("✅ Done! Forwarded to all your channels.");
   }
 });
 
