@@ -1,4 +1,4 @@
-// bot.js - XFTEAM Telegram Bot Forward Version
+// bot.js - XFTEAM Telegram Bot Forward Full Version
 const { Telegraf, Markup } = require("telegraf");
 const { Client } = require("pg");
 const express = require("express");
@@ -7,7 +7,7 @@ const express = require("express");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
-const PASSWORD = "xfbest"; // <-- Password for access
+const PASSWORD = "xfbest"; // Password access
 
 if (!BOT_TOKEN || !DATABASE_URL) {
   console.error("BOT_TOKEN and DATABASE_URL are required!");
@@ -69,22 +69,19 @@ async function listUserChannels(userId) {
   return res.rows;
 }
 
-async function broadcastContent(userId, content) {
+async function broadcastForward(userId, messages) {
   const channels = await listUserChannels(userId);
   if (!channels.length) return;
 
   for (const ch of channels) {
     try {
-      for (const item of content) {
-        if (item.message_id) {
-          // Forward original message
-          await bot.telegram.forwardMessage(ch.channel_id, item.chat_id, item.message_id);
-        } else if (item.type === "text") {
-          await bot.telegram.sendMessage(ch.channel_id, item.value, { parse_mode: "HTML" });
+      for (const msg of messages) {
+        if (msg.message_id) {
+          await bot.telegram.forwardMessage(ch.channel_id, msg.chat_id, msg.message_id);
         }
       }
     } catch (e) {
-      console.error(`Failed to forward/send to ${ch.channel_id}:`, e.message || e);
+      console.error(`Failed to forward to ${ch.channel_id}:`, e.message || e);
       if (e.message && e.message.toLowerCase().includes("chat not found")) {
         await db.query("DELETE FROM channels WHERE user_id=$1 AND channel_id=$2", [userId, ch.channel_id]);
       }
@@ -112,10 +109,8 @@ bot.on("my_chat_member", async (ctx) => {
     const { chat, new_chat_member } = ctx.update.my_chat_member;
     if (chat.type !== "channel") return;
 
-    // Hanya ketika bot dijadikan admin
     if (new_chat_member.user.id === BOT_ID && new_chat_member.status === "administrator") {
       const admins = await bot.telegram.getChatAdministrators(chat.id);
-      // Ambil semua admin manusia (bukan bot) untuk simpan user_id
       for (const admin of admins) {
         if (!admin.user.is_bot) {
           const saved = await upsertChannel(admin.user.id, chat.id);
@@ -157,7 +152,7 @@ bot.hears("❌ Cancel", async (ctx) => {
   return ctx.reply("Canceled. Back to menu.", Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize());
 });
 
-// ---------- Collect & Auto Broadcast ----------
+// ---------- Collect & Auto Forward ----------
 bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "private") return;
   const msg = ctx.message;
@@ -166,7 +161,6 @@ bot.on("message", async (ctx) => {
   const state = userState[ctx.from.id];
   if (!state) return;
 
-  // Password check first
   if (state.step === "awaiting_password") {
     if (msg.text === PASSWORD) {
       state.step = "menu";
@@ -180,11 +174,10 @@ bot.on("message", async (ctx) => {
     return;
   }
 
-  // Collect content to forward
   if (state.step === "menu") {
     state.content.push({ chat_id: msg.chat.id, message_id: msg.message_id });
-    await ctx.reply("✅ Content received. Forwarding to all your channels...");
-    await broadcastContent(ctx.from.id, state.content);
+    await ctx.reply("✅ Message received. Forwarding to all your channels...");
+    await broadcastForward(ctx.from.id, state.content);
     state.content = [];
     await ctx.reply("✅ Done! Forwarded to all your channels.");
   }
@@ -192,7 +185,5 @@ bot.on("message", async (ctx) => {
 
 // ---------- Launch ----------
 bot.launch({ polling: true }).then(() => console.log("Bot launched with polling"));
-
-// Graceful shutdown
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
