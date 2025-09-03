@@ -1,4 +1,4 @@
-// bot.js - XFTEAM Telegram Bot Forward Final Version
+// bot.js - XFTEAM Telegram Bot CopyMessage Version
 const { Telegraf, Markup } = require("telegraf");
 const { Client } = require("pg");
 const express = require("express");
@@ -7,7 +7,7 @@ const express = require("express");
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
-const PASSWORD = "xfbest"; // Password access
+const PASSWORD = "xfbest"; // Password for bot access
 
 if (!BOT_TOKEN || !DATABASE_URL) {
   console.error("BOT_TOKEN and DATABASE_URL are required!");
@@ -41,7 +41,6 @@ db.connect()
 
 // ---------- Bot ----------
 const bot = new Telegraf(BOT_TOKEN);
-const userState = {}; // { userId: { step, messages[] } }
 
 let BOT_ID = null;
 bot.telegram.getMe().then((me) => (BOT_ID = me.id));
@@ -69,20 +68,18 @@ async function listUserChannels(userId) {
   return res.rows;
 }
 
-async function broadcastForward(userId, messages) {
+async function broadcastCopy(userId, msg) {
   const channels = await listUserChannels(userId);
   if (!channels.length) return;
 
   for (const ch of channels) {
     try {
-      for (const msg of messages) {
-        if (msg.message_id) {
-          // Forward message as BOT
-          await bot.telegram.forwardMessage(ch.channel_id, BOT_ID, msg.message_id);
-        }
-      }
+      await bot.telegram.copyMessage(ch.channel_id, msg.chat.id, msg.message_id, {
+        caption: msg.caption || undefined,
+        parse_mode: msg.text ? "HTML" : undefined
+      });
     } catch (e) {
-      console.error(`Failed to forward to ${ch.channel_id}:`, e.message || e);
+      console.error(`Failed to copy to ${ch.channel_id}:`, e.message || e);
       if (e.message && e.message.toLowerCase().includes("chat not found")) {
         await db.query("DELETE FROM channels WHERE user_id=$1 AND channel_id=$2", [userId, ch.channel_id]);
       }
@@ -98,7 +95,6 @@ app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
 // ---------- Start ----------
 bot.start(async (ctx) => {
   if (ctx.chat.type !== "private") return;
-  userState[ctx.from.id] = { step: "awaiting_password", messages: [] };
   await ctx.reply(
     "Welcome TashanWIN\nXFTEAM\nhttps://t.me/TASHANWINXFTEAM\n\nPlease enter the password to use this bot:"
   );
@@ -110,12 +106,13 @@ bot.on("my_chat_member", async (ctx) => {
     const { chat, new_chat_member } = ctx.update.my_chat_member;
     if (chat.type !== "channel") return;
 
+    // Bot jadi admin
     if (new_chat_member.user.id === BOT_ID && new_chat_member.status === "administrator") {
       const admins = await bot.telegram.getChatAdministrators(chat.id);
       for (const admin of admins) {
         if (!admin.user.is_bot) {
           const saved = await upsertChannel(admin.user.id, chat.id);
-          console.log(`Auto-registered channel ${saved.title} for user ${admin.user.id}`);
+          console.log(`Channel registered: ${saved.title} for user ${admin.user.id}`);
           try {
             await bot.telegram.sendMessage(
               admin.user.id,
@@ -126,7 +123,7 @@ bot.on("my_chat_member", async (ctx) => {
       }
     } else if (new_chat_member.status === "left" || new_chat_member.status === "kicked") {
       await db.query("DELETE FROM channels WHERE channel_id=$1", [chat.id]);
-      console.log(`Removed channel ${chat.title} from DB`);
+      console.log(`Channel removed from DB: ${chat.title}`);
     }
   } catch (e) {
     console.error("my_chat_member error:", e.message || e);
@@ -145,43 +142,30 @@ bot.hears("📋 View My Channels", async (ctx) => {
 
 // ---------- Cancel ----------
 bot.command("cancel", async (ctx) => {
-  userState[ctx.from.id] = { step: "menu", messages: [] };
   return ctx.reply("Canceled. Back to menu.", Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize());
 });
 bot.hears("❌ Cancel", async (ctx) => {
-  userState[ctx.from.id] = { step: "menu", messages: [] };
   return ctx.reply("Canceled. Back to menu.", Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize());
 });
 
-// ---------- Collect & Auto Forward ----------
+// ---------- Collect & Auto Copy ----------
 bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "private") return;
+
   const msg = ctx.message;
   if (!msg || !msg.message_id) return;
 
-  const state = userState[ctx.from.id];
-  if (!state) return;
-
-  if (state.step === "awaiting_password") {
-    if (msg.text === PASSWORD) {
-      state.step = "menu";
-      await ctx.reply(
-        "✅ Password correct! You can now use the bot.",
-        Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize()
-      );
-    } else {
-      await ctx.reply("❌ Wrong password! Please contact @kasiatashan");
-    }
+  if (msg.text === PASSWORD) {
+    await ctx.reply(
+      "✅ Password correct! You can now use the bot.",
+      Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize()
+    );
     return;
   }
 
-  if (state.step === "menu") {
-    state.messages.push({ chat_id: msg.chat.id, message_id: msg.message_id });
-    await ctx.reply("✅ Message received. Forwarding to all your channels...");
-    await broadcastForward(ctx.from.id, state.messages);
-    state.messages = [];
-    await ctx.reply("✅ Done! Forwarded to all your channels.");
-  }
+  await ctx.reply("✅ Message received. Copying to all your channels...");
+  await broadcastCopy(ctx.from.id, msg);
+  await ctx.reply("✅ Done! Message copied to all channels.");
 });
 
 // ---------- Launch ----------
