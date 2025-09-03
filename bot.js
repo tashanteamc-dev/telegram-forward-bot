@@ -1,17 +1,20 @@
+// bot.js - XFTEAM Telegram Bot Full Version
 const { Telegraf, Markup } = require("telegraf");
 const { Client } = require("pg");
 const express = require("express");
 
+// ---------- Config ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT = process.env.PORT || 3000;
-const PASSWORD = "xfbest";
+const PASSWORD = "xfbest"; // Password for bot access
 
 if (!BOT_TOKEN || !DATABASE_URL) {
   console.error("BOT_TOKEN and DATABASE_URL are required!");
   process.exit(1);
 }
 
+// ---------- DB ----------
 const db = new Client({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -36,12 +39,14 @@ db.connect()
     process.exit(1);
   });
 
+// ---------- Bot ----------
 const bot = new Telegraf(BOT_TOKEN);
-const userState = {};
+const userState = {}; // { userId: { step, content[] } }
 
 let BOT_ID = null;
 bot.telegram.getMe().then((me) => (BOT_ID = me.id));
 
+// ---------- Helpers ----------
 async function upsertChannel(userId, channelId) {
   const chat = await bot.telegram.getChat(channelId);
   const title = chat.title || channelId;
@@ -83,6 +88,7 @@ async function broadcastContent(userId, content) {
         }
       }
     } catch (e) {
+      console.error(`Failed to send to ${ch.channel_id}:`, e.message || e);
       if (e.message && e.message.toLowerCase().includes("chat not found")) {
         await db.query("DELETE FROM channels WHERE user_id=$1 AND channel_id=$2", [userId, ch.channel_id]);
       }
@@ -90,10 +96,12 @@ async function broadcastContent(userId, content) {
   }
 }
 
+// ---------- Express keep-alive ----------
 const app = express();
 app.get("/", (_, res) => res.send("Bot is running"));
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
 
+// ---------- Start ----------
 bot.start(async (ctx) => {
   if (ctx.chat.type !== "private") return;
   userState[ctx.from.id] = { step: "awaiting_password", content: [] };
@@ -102,6 +110,7 @@ bot.start(async (ctx) => {
   );
 });
 
+// ---------- Auto-detect channel ----------
 bot.on("my_chat_member", async (ctx) => {
   try {
     const { chat, from, new_chat_member } = ctx.update.my_chat_member;
@@ -109,6 +118,7 @@ bot.on("my_chat_member", async (ctx) => {
 
     if (new_chat_member.status === "administrator") {
       const saved = await upsertChannel(from.id, chat.id);
+      console.log(`Auto-registered channel ${saved.title} for user ${from.id}`);
       try {
         await bot.telegram.sendMessage(
           from.id,
@@ -117,12 +127,14 @@ bot.on("my_chat_member", async (ctx) => {
       } catch {}
     } else if (new_chat_member.status === "left" || new_chat_member.status === "kicked") {
       await db.query("DELETE FROM channels WHERE channel_id=$1", [chat.id]);
+      console.log(`Removed channel ${chat.title} from DB`);
     }
   } catch (e) {
     console.error("my_chat_member error:", e.message || e);
   }
 });
 
+// ---------- View Channels ----------
 bot.hears("📋 View My Channels", async (ctx) => {
   if (ctx.chat.type !== "private") return;
   const channels = await listUserChannels(ctx.from.id);
@@ -132,6 +144,7 @@ bot.hears("📋 View My Channels", async (ctx) => {
   return ctx.reply(text);
 });
 
+// ---------- Cancel ----------
 bot.command("cancel", async (ctx) => {
   userState[ctx.from.id] = { step: "menu", content: [] };
   return ctx.reply("Canceled. Back to menu.", Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize());
@@ -141,14 +154,16 @@ bot.hears("❌ Cancel", async (ctx) => {
   return ctx.reply("Canceled. Back to menu.", Markup.keyboard([["📋 View My Channels"], ["❌ Cancel"]]).resize());
 });
 
+// ---------- Collect & Auto Broadcast ----------
 bot.on("message", async (ctx) => {
   if (ctx.chat.type !== "private") return;
   const msg = ctx.message;
-  if (!msg || !msg.text && !msg.photo && !msg.video && !msg.animation && !msg.sticker) return;
+  if (!msg || (!msg.text && !msg.photo && !msg.video && !msg.animation && !msg.sticker)) return;
 
   const state = userState[ctx.from.id];
   if (!state) return;
 
+  // Password check first
   if (state.step === "awaiting_password") {
     if (msg.text === PASSWORD) {
       state.step = "menu";
@@ -162,6 +177,7 @@ bot.on("message", async (ctx) => {
     return;
   }
 
+  // Only collect content if user passed password
   if (state.step === "menu") {
     let item = null;
     if (msg.text) {
@@ -186,7 +202,9 @@ bot.on("message", async (ctx) => {
   }
 });
 
+// ---------- Launch ----------
 bot.launch({ polling: true }).then(() => console.log("Bot launched with polling"));
 
+// Graceful shutdown
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
