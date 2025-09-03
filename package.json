@@ -1,0 +1,14 @@
+{
+  "name": "tashan-bot",
+  "version": "1.0.0",
+  "description": "Telegram Channel Posting Bot with password protection",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "telegraf": "^4.15.3"
+  }
+}
